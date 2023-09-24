@@ -1,7 +1,7 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 import { stateMachine, sfnExecutionRole } from "./stateMachine";
-import * as AWS from "aws-sdk";
+import { outputStateMachineArn } from ".";
 
 
 export const restApi = new aws.apigateway.RestApi("my-api", {
@@ -17,19 +17,6 @@ export const resource = new aws.apigateway.Resource("my-resource", {
     pathPart: "euclid"
 });
 
-export const integration = new aws.apigateway.Integration("my-integration", {
-    restApi: restApi.id,
-    resourceId: resource.id,
-    httpMethod: "POST",
-    integrationHttpMethod: "POST",
-    type: "AWS",
-    uri: pulumi.interpolate`arn:aws:apigateway:${aws.config.region}:states:action/StartExecution`,
-    credentials: sfnExecutionRole.arn,
-    requestTemplates: {
-        "application/json": stateMachine.arn.apply(arn => 
-            `{"input": "$util.escapeJavaScript($input.json('$'))", "name": "MyExecutionName", "stateMachineArn": "${arn}"}`)
-    }
-});
 
 export const method = new aws.apigateway.Method("my-method", {
     restApi: restApi.id,
@@ -38,6 +25,21 @@ export const method = new aws.apigateway.Method("my-method", {
     authorization: "NONE"
 });
 
+// PLEASE DEPLOY IN US-EAST-1. 
+export const integration = new aws.apigateway.Integration("my-integration", {
+    restApi: restApi.id,
+    resourceId: resource.id,
+    httpMethod: "POST",
+    integrationHttpMethod: "POST",
+    type: "AWS",
+    //uri: pulumi.interpolate`arn:aws:apigateway:${aws.config.region}:states:action/StartExecution`,
+    uri: pulumi.interpolate`arn:aws:apigateway:us-east-1:states:action/StartExecution`,
+    credentials: sfnExecutionRole.arn,
+    requestTemplates: {
+        "application/json": pulumi.interpolate`{"input": "$util.escapeJavaScript($input.json(\'$\'))", "stateMachineArn": "${stateMachine.arn}"}`
+    }
+}, { dependsOn: [method] });
+
 // 3. Integrate the API Gateway with the Step Functions State Machine.
 
 export const policyDocument = pulumi.all([restApi.executionArn, stateMachine.arn]).apply(([executionArn, stateMachineArn]) => {
@@ -45,7 +47,7 @@ export const policyDocument = pulumi.all([restApi.executionArn, stateMachine.arn
         Version: "2012-10-17",
         Statement: [{
             Effect: "Allow",
-            Action: "states:StartExecution",
+            Action: "states:*",
             Resource: stateMachineArn,
             Condition: {
                 ArnEquals: {
@@ -56,6 +58,11 @@ export const policyDocument = pulumi.all([restApi.executionArn, stateMachine.arn
     });
 });
 
+export const policy = new aws.iam.Policy("api-gateway-sfn-policy", {
+    policy: policyDocument
+});
+
+
 export const deployment = new aws.apigateway.Deployment("my-deployment", {
     restApi: restApi,
     stageName: "prod", // or another preferred name for the stage
@@ -64,16 +71,11 @@ export const deployment = new aws.apigateway.Deployment("my-deployment", {
     variables: {
         deploymentTimestamp: Date.now().toString()
     }
-}, {
-    dependsOn: [integration]
-});
+}, { dependsOn: [method] });
 
 
 export const apiUrl = deployment.invokeUrl;
 
-export const policy = new aws.iam.Policy("api-gateway-sfn-policy", {
-    policy: policyDocument
-});
 
 export const rolePolicyAttachment = new aws.iam.RolePolicyAttachment("attach-policy-to-role", {
     role: sfnExecutionRole.name,
@@ -82,6 +84,15 @@ export const rolePolicyAttachment = new aws.iam.RolePolicyAttachment("attach-pol
 
 export const apiGatewayUrl = restApi.executionArn;
 
+export const integrationResponse = new aws.apigateway.IntegrationResponse("my-integration-response", {
+    restApi: restApi,
+    resourceId: resource.id,
+    httpMethod: "POST",
+    statusCode: "200",
+    responseTemplates: {
+        "application/json": ""
+    }
+});
 // // Create a CloudWatch Log Group
 // export const logGroup = new aws.cloudwatch.LogGroup("apiGatewayLogGroup");
 
