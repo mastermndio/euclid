@@ -1,17 +1,16 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
-import { RestAPI } from "@pulumi/aws-apigateway";
 
 const provider = new aws.Provider("provider", {
     region: "us-east-1"  // Replace with your desired region.
 });
 
-
 /*
-S3 BUCKET CONFIGURATION
+S3 BUCKET CONFIGURATION BEGIN
 */
 
-export const myBucket = new aws.s3.Bucket("euclidBucket", {
+// Create Bucket to store input/output
+export const euclidBucket = new aws.s3.Bucket("euclidBucket", {
     acl: "private",  // Access Control List
     tags: {
         Name: "Euclid Output Bucket",
@@ -20,10 +19,28 @@ export const myBucket = new aws.s3.Bucket("euclidBucket", {
 });
 
 /*
-ESC TASK CONFIGURATION
+S3 BUCKET CONFIGURATION END
+*/
+
+
+/*
+ESC TASK CONFIGURATION BEGIN
 */
 
 const cluster = new aws.ecs.Cluster("dev");
+
+const ecsExecutionRole = new aws.iam.Role("ecsExecutionRole", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Effect: "Allow",
+            Principal: {
+                Service: "ecs-tasks.amazonaws.com"
+            }
+        }]
+    })
+});
 
 const ecsTaskRole = new aws.iam.Role("ecsTaskRole", {
     assumeRolePolicy: JSON.stringify({
@@ -39,51 +56,85 @@ const ecsTaskRole = new aws.iam.Role("ecsTaskRole", {
 });
 
 const taskDefinition = new aws.ecs.TaskDefinition("my-task", {
-    family: "my-task-family",
+    family: "euclid-service",
     cpu: "256",
     memory: "512",
     networkMode: "awsvpc",
     requiresCompatibilities: ["FARGATE"],
-    executionRoleArn: ecsTaskRole.arn,
+    executionRoleArn: ecsExecutionRole.arn,
+    taskRoleArn: ecsTaskRole.arn,
     containerDefinitions: JSON.stringify([{
         name: "euclid",
-        image: "httpd",
+        image: "mastermndio/euclid",
         memory: 128,
         cpu: 128,
         essential: true,
-        portMappings: [{
-            containerPort: 80
-        }]
+        logConfiguration: {
+            logDriver: "awslogs",
+            options: {
+                "awslogs-group": "euclid-container",
+                "awslogs-region": "us-east-1",
+                "awslogs-create-group": "true",
+                "awslogs-stream-prefix": "euclid"
+            }
+        }
     }])
 });
 
 const s3BucketAccessPolicy = new aws.iam.Policy("s3BucketAccessPolicy", {
     description: "Allows ECS tasks to read and write to the specified S3 bucket",
-    policy: myBucket.arn.apply(arn => JSON.stringify({
+    policy: euclidBucket.arn.apply(arn => JSON.stringify({
         Version: "2012-10-17",
         Statement: [{
             Action: [
-                "s3:PutObject",
-                "s3:GetObject",
-                "s3:ListBucket",
-                "s3:DeleteObject"
+                "s3:Put*",
+                "s3:Get*",
+                "s3:List*",
+                "s3:Delete*"
             ],
             Resource: [
-                arn,         // Bucket ARN
-                `${arn}/*`   // All objects inside the bucket
+                arn,     
+                `${arn}/*`
             ],
             Effect: "Allow"
         }]
     }))
 });
 
-const policyAttachment = new aws.iam.RolePolicyAttachment("s3BucketAccessPolicyAttachment", {
-    policyArn: s3BucketAccessPolicy.arn,
-    role: ecsTaskRole.name
+
+const ecsRunTaskPolicy = pulumi.all([taskDefinition.arn, ecsExecutionRole.arn, ecsTaskRole.arn]).apply(([taskDefArn, ecsExecutionRoleArn, ecsTaskRoleArn]) => {
+//const ecsRunTaskPolicy = taskDefinition.arn.apply(arn => {
+    return new aws.iam.Policy("ecsRunTaskPolicy", {
+        description: "Permission to run ECS tasks",
+        policy: JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [
+                {
+                    Effect: "Allow",
+                    Action: "ecs:RunTask",
+                    Resource: taskDefArn
+                },
+                {
+                    Effect: "Allow",
+                    Action: "iam:PassRole",
+                    Resource: [
+                        ecsExecutionRoleArn,
+                        ecsTaskRoleArn
+                    ]
+                },
+            ]
+        })
+    });
 });
 
 /*
-STATE MACHINE CONFIG START
+ESC TASK CONFIGURATION END
+*/
+
+
+
+/*
+STATE MACHINE CONFIGURATION START
 */
 
 // IAM role for execution of state machine
@@ -104,7 +155,14 @@ export const sfnExecutionRole = new aws.iam.Role("sfn-execution-role", {
                     Service: "states.amazonaws.com"
                 },
                 Action: "sts:AssumeRole"
-            }
+            },
+            {
+                Effect: "Allow",
+                Principal: {
+                    Service: "lambda.amazonaws.com"
+                },
+                Action: "sts:AssumeRole"
+            },
         ]
     })
 });
@@ -129,22 +187,21 @@ const sfnExecutionPolicy = new aws.iam.Policy("sfnExecutionPolicy", {
     }),
 });
 
-const snfPolicyAttachment = new aws.iam.PolicyAttachment("sfnExecutionPolicyAttachment", {
+const sfnPolicyAttachment = new aws.iam.PolicyAttachment("sfnExecutionPolicyAttachment", {
     policyArn: sfnExecutionPolicy.arn,
     roles: [sfnExecutionRole],
 });
-// Define the state machine definition
-// export const definition = `{
-//     "Comment": "A Hello World example of the Amazon States Language using a Pass state",
-//     "StartAt": "HelloWorld",
-//     "States": {
-//         "HelloWorld": {
-//             "Type": "Pass",
-//             "Result": "Hello, World!",
-//             "End": true
-//         }
-//     }
-// }`;
+;
+
+const ecsRolePolicyAttachment = new aws.iam.RolePolicyAttachment("ecsRolePolicyAttachment", {
+    role: sfnExecutionRole,
+    policyArn: ecsRunTaskPolicy.arn
+}, { dependsOn: [sfnExecutionRole] });
+
+const ecsExecutionRolePolicyAttachment = new aws.iam.RolePolicyAttachment("ecsExecutionRolePolicyAttachment", {
+    role: ecsExecutionRole,
+    policyArn: ecsRunTaskPolicy.arn
+});
 
 // Create a CloudWatch Log Group for the State Machine
 export const sfnLogGroup = new aws.cloudwatch.LogGroup("sfnLogGroup");
@@ -165,6 +222,7 @@ export const sfnLoggingPolicy = new aws.iam.Policy("sfnLoggingPolicy", {
                 "logs:DescribeResourcePolicies",
                 "logs:DescribeLogGroups",
                 "logs:CreateLogStream",
+                "logs:CreateLogGroup",
                 "logs:PutLogEvents"
             ],
             Resource: "*"
@@ -177,33 +235,129 @@ export const sfnLoggingPolicyAttachment = new aws.iam.RolePolicyAttachment("sfnL
     policyArn: sfnLoggingPolicy.arn
 });
 
+export const ecsLoggingPolicyAttachment = new aws.iam.RolePolicyAttachment("ecsLoggingAttachment", {
+    role: ecsExecutionRole.name,  // Adjust this to the name or reference of your state machine's execution role
+    policyArn: sfnLoggingPolicy.arn
+});
+
 // Fetch default VPC
 const defaultVpc = aws.ec2.getVpc({ default: true });
 
 // Fetch default subnets for the default VPC
 const defaultSubnetIds = defaultVpc.then(vpc => aws.ec2.getSubnetIds({ vpcId: vpc.id }));
 
-const stateMachineDefinition = defaultSubnetIds.then(subnets => JSON.stringify({
-    StartAt: "RunEcsTask",
-    States: {
-      RunEcsTask: {
-        Type: "Task",
-        Resource: "arn:aws:states:::ecs:runTask.sync",
-        Parameters: {
-          LaunchType: "FARGATE",
-          Cluster: cluster.arn,
-          TaskDefinition: taskDefinition.arn,
-          NetworkConfiguration: {
-            AwsvpcConfiguration: {
-              Subnets: subnets.ids, 
-              AssignPublicIp: "ENABLED"
-            }
-          }
+const lambdaExecutionRole = new aws.iam.Role("lambdaExecutionRole", {
+    assumeRolePolicy: JSON.stringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Action: "sts:AssumeRole",
+            Principal: {
+                Service: "lambda.amazonaws.com"
+            },
+            Effect: "Allow",
+            Sid: ""
+        }]
+    })
+});
+
+const LambdaS3policyAttachment = new aws.iam.RolePolicyAttachment("LambdaS3PolicyAttachment", {
+    policyArn: s3BucketAccessPolicy.arn,
+    role: lambdaExecutionRole.name
+});
+
+const LambdaExecutionPolicyAttachment = new aws.iam.RolePolicyAttachment("lambdaExecutionPolicyAttachment", {
+    policyArn: "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+    role: lambdaExecutionRole.name
+});
+
+
+const s3UploadLambda = new aws.lambda.Function("s3UploadLambda", {
+    runtime: "nodejs16.x" ,
+    code: new pulumi.asset.AssetArchive({
+        ".": new pulumi.asset.FileArchive("./lambdas"),
+    }),
+    handler: "s3upload.handler",
+    role: lambdaExecutionRole.arn, // Make sure this role has permissions to write to S3.
+    environment: {
+        variables: {
+            S3_BUCKET: euclidBucket.bucket,
         },
-        End: true
-      }
-    }
-  }));
+    },
+})
+
+const lambdaInvokePolicy = new aws.iam.Policy("lambdaInvokePolicy", {
+    policy: pulumi.interpolate`{
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Action": "lambda:InvokeFunction",
+            "Resource": "${s3UploadLambda.arn}"
+        }]
+    }`
+});
+
+const lambdaInvokePolicyAttachment = new aws.iam.PolicyAttachment("lambdaInvokePolicyAttachment", {
+    policyArn: lambdaInvokePolicy.arn,
+    roles: [sfnExecutionRole]
+});
+
+
+const stateMachineDefinition = pulumi.all([defaultSubnetIds, s3UploadLambda.arn, cluster.arn, taskDefinition.arn, provider.region]).apply(([subnets, lambdaArn, clusterArn, taskArn, region]) => {
+    return JSON.stringify({
+        StartAt: "S3Upload",
+        States: {
+            S3Upload: {
+                Type: "Task",
+                Resource: lambdaArn,
+                Next: "RunEcsTask"
+            },
+            RunEcsTask: {
+                Type: "Task",
+                Resource: "arn:aws:states:::ecs:runTask.sync",
+                Parameters: {
+                    LaunchType: "FARGATE",
+                    Cluster: clusterArn,
+                    TaskDefinition: taskArn,
+                    NetworkConfiguration: {
+                        AwsvpcConfiguration: {
+                            Subnets: subnets.ids,
+                            AssignPublicIp: "ENABLED"
+                        }
+                    },
+                    Overrides: {
+                        ContainerOverrides:[{
+                            Name: "euclid",
+                            Environment:[
+                              {
+                                Name: "NUM1",
+                                "Value.$":"$.num1"
+                              },
+                              {
+                                Name: "NUM2",
+                                "Value.$":"$.num2"
+                              },
+                              {
+                                Name: "BUCKET",
+                                "Value.$":"$.bucket"
+                              },
+                              {
+                                Name: "KEY",
+                                "Value.$":"$.key"
+                              },
+                              {
+                                Name: "REGION",
+                                Value: region
+                              }
+
+                            ]
+                        }]
+                    }
+                },
+                End: true
+            }
+        }
+    });
+});
 
 export const stateMachine = new aws.sfn.StateMachine("stateMachine", {
     definition: stateMachineDefinition, 
@@ -214,7 +368,7 @@ export const stateMachine = new aws.sfn.StateMachine("stateMachine", {
         logDestination: pulumi.interpolate`${sfnLogGroup.arn}:*`
     }
 },{
-    dependsOn: [sfnLogGroup]
+    dependsOn: [sfnLogGroup, s3UploadLambda, euclidBucket]
 });
 
 export const sfnRolePolicy = new aws.iam.RolePolicy("sfn-role-policy", {
@@ -228,6 +382,21 @@ export const sfnRolePolicy = new aws.iam.RolePolicy("sfn-role-policy", {
         }]
     }
 });
+
+const SfnS3policyAttachment = new aws.iam.RolePolicyAttachment("SfnS3PolicyAttachment", {
+    policyArn: s3BucketAccessPolicy.arn,
+    role: sfnExecutionRole.name
+});
+
+const s3EcsBucketAccessPolicyAttachment = new aws.iam.RolePolicyAttachment("s3EcsBucketAccessPolicyAttachment", {
+    policyArn: s3BucketAccessPolicy.arn,
+    role: ecsTaskRole.name
+},{ dependsOn: [s3BucketAccessPolicy, ecsTaskRole] });
+
+/*
+STATE MACHINE CONFIGURATION END
+*/
+
 
 /*
 APIGATEWAY CONFIG START
@@ -260,7 +429,6 @@ export const integration = new aws.apigateway.Integration("my-integration", {
     httpMethod: "POST",
     integrationHttpMethod: "POST",
     type: "AWS",
-    //uri: pulumi.interpolate`arn:aws:apigateway:${aws.config.region}:states:action/StartExecution`,
     uri: pulumi.interpolate`arn:aws:apigateway:us-east-1:states:action/StartExecution`,
     credentials: sfnExecutionRole.arn,
     requestTemplates: {
@@ -268,7 +436,6 @@ export const integration = new aws.apigateway.Integration("my-integration", {
     }
 }, { dependsOn: [method] });
 
-// 3. Integrate the API Gateway with the Step Functions State Machine.
 
 export const policyDocument = pulumi.all([restApi.executionArn, stateMachine.arn]).apply(([executionArn, stateMachineArn]) => {
     return JSON.stringify({
@@ -293,12 +460,7 @@ export const policy = new aws.iam.Policy("api-gateway-sfn-policy", {
 
 export const deployment = new aws.apigateway.Deployment("my-deployment", {
     restApi: restApi,
-    stageName: "prod", // or another preferred name for the stage
-    // If you've added/modified resources/methods, you should always force a new deployment to avoid caching issues.
-    // This is a Pulumi trick to always redeploy if something in the API Gateway changes.
-    variables: {
-        deploymentTimestamp: Date.now().toString()
-    }
+    stageName: "prod",
 }, { dependsOn: [integration] });
 
 
@@ -329,11 +491,13 @@ export const integrationResponse = new aws.apigateway.IntegrationResponse("my-in
     }
 }, { dependsOn: [integration]});
 
-
+/*
+APIGATEWAY CONFIGURATION END
+*/
 
 
 export const outputApiGatewayUrl = apiGatewayUrl;
 export const outputStateMachineArn = stateMachine.arn;
 export const outputApiUrl = apiUrl;
-export const outputBucketArn = myBucket.arn;
-export const outputBucketName = myBucket.id;
+export const outputBucketArn = euclidBucket.arn;
+export const outputBucketName = euclidBucket.id;
