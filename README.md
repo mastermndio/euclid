@@ -7,7 +7,7 @@ This service is capable of complex mathmatical calculations just like the ancien
 ## 🤺Challenge
 You're tasked with designing a processing pipeline using Pulumi and AWS step functions. Your input is the following JSON blob as a string:
 
-```json
+```JSON
 { "a": <number>,"b": <number> }
 ```
 
@@ -27,7 +27,7 @@ For installation please see [INSTALL.md](./INSTALL.md)
 ## Service Input
 
 The service is available at the `outputServiceEndpoint`(Pulumi Output) and accepts a POST request with JSON body with the following structure:
-```json
+```JSON
 { "a": <int>, "b": <int> }
 ```
 
