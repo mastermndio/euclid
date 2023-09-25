@@ -8,7 +8,7 @@ This service is capable of complex mathmatical calculations just like the ancien
 You're tasked with designing a processing pipeline using Pulumi and AWS step functions. Your input is the following JSON blob as a string:
 
 ```json
-{ "a": <number> "b": <number> }
+{ "a": <number>,"b": <number> }
 ```
 
 Please build a step function definition that achieves the following:
@@ -24,3 +24,17 @@ You can use any language you want within the ECS/docker container, at RISC Zero 
 ## Installation
 For installation please see [INSTALL.md](./INSTALL.md)
 
+## Service Input
+
+The service is available at the `outputServiceEndpoint`(Pulumi Output) and accepts a POST request with JSON body with the following structure:
+```json
+{ "a": <int>, "b": <int> }
+```
+
+An example full request using curl would look like this:
+```bash
+curl -X POST -H "Content-Type: application/json" -d '{ "a": 20, "b": 50 }' https://1oxwxuvm4h.execute-api.us-east-1.amazonaws.com/prod/euclid
+```
+
+## Service Output
+Assuming valid input, the service will save the JSON body of the request to file with the current datetime. This file will be uploaded to the S3 bucket specified as `outputBucketName` in your Pulumi output and will have the prefix `input`. Once processing has taken place, a file with the same name will be uploaded to S3 with the prefix `output` that contains the sum of the integers provided in the input.
