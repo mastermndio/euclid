@@ -3,7 +3,6 @@ const s3 = new AWS.S3();
 
 exports.handler = async (event) => {
     let timestamp = new Date().toISOString();
-    let input = event.input
 
     const s3Bucket = process.env.S3_BUCKET;
     const s3Key = `input/${timestamp}.json`;
@@ -11,15 +10,16 @@ exports.handler = async (event) => {
     await s3.putObject({
         Bucket: s3Bucket,
         Key: s3Key,
-        Body: JSON.stringify(event.input), // or choose what part of the event you want to save
+        Body: JSON.stringify(event), // or choose what part of the event you want to save
         ContentType: "application/json"
     }).promise();
+
 
     return {
         message: "Successfully uploaded to S3",
         bucket: s3Bucket,
         key: s3Key,
-        num1: event.input.a.toString(),
-        num2: event.input.b.toString()
+        num1: event.a.toString(),
+        num2: event.b.toString()
     };
 };

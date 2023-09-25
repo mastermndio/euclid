@@ -1,17 +1,18 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 
-const provider = new aws.Provider("provider", {
-    region: "us-east-1"  // Replace with your desired region.
-});
+
+const config = new pulumi.Config()
+const euclidImageName = config.require("imageName")
+const region = config.require("region")
 
 /*
 S3 BUCKET CONFIGURATION BEGIN
 */
 
 // Create Bucket to store input/output
-export const euclidBucket = new aws.s3.Bucket("euclidBucket", {
-    acl: "private",  // Access Control List
+const euclidBucket = new aws.s3.Bucket("euclidBucket", {
+    acl: "private",
     tags: {
         Name: "Euclid Output Bucket",
         Environment: pulumi.getStack()
@@ -54,7 +55,6 @@ const ecsTaskRole = new aws.iam.Role("ecsTaskRole", {
         }]
     })
 });
-
 const taskDefinition = new aws.ecs.TaskDefinition("my-task", {
     family: "euclid-service",
     cpu: "256",
@@ -65,7 +65,7 @@ const taskDefinition = new aws.ecs.TaskDefinition("my-task", {
     taskRoleArn: ecsTaskRole.arn,
     containerDefinitions: JSON.stringify([{
         name: "euclid",
-        image: "mastermndio/euclid",
+        image: euclidImageName,
         memory: 128,
         cpu: 128,
         essential: true,
@@ -138,7 +138,7 @@ STATE MACHINE CONFIGURATION START
 */
 
 // IAM role for execution of state machine
-export const sfnExecutionRole = new aws.iam.Role("sfn-execution-role", {
+const sfnExecutionRole = new aws.iam.Role("sfn-execution-role", {
     assumeRolePolicy: JSON.stringify({
         Version: "2012-10-17",
         Statement: [
@@ -204,10 +204,10 @@ const ecsExecutionRolePolicyAttachment = new aws.iam.RolePolicyAttachment("ecsEx
 });
 
 // Create a CloudWatch Log Group for the State Machine
-export const sfnLogGroup = new aws.cloudwatch.LogGroup("sfnLogGroup");
+const sfnLogGroup = new aws.cloudwatch.LogGroup("sfnLogGroup");
 
 // IAM policy to allow state machine to write logs
-export const sfnLoggingPolicy = new aws.iam.Policy("sfnLoggingPolicy", {
+const sfnLoggingPolicy = new aws.iam.Policy("sfnLoggingPolicy", {
     policy: sfnLogGroup.arn.apply(arn => JSON.stringify({
         Version: "2012-10-17",
         Statement: [{
@@ -230,12 +230,12 @@ export const sfnLoggingPolicy = new aws.iam.Policy("sfnLoggingPolicy", {
     }))
 });
 
-export const sfnLoggingPolicyAttachment = new aws.iam.RolePolicyAttachment("sfnLoggingAttachment", {
+const sfnLoggingPolicyAttachment = new aws.iam.RolePolicyAttachment("sfnLoggingAttachment", {
     role: sfnExecutionRole.name,  // Adjust this to the name or reference of your state machine's execution role
     policyArn: sfnLoggingPolicy.arn
 });
 
-export const ecsLoggingPolicyAttachment = new aws.iam.RolePolicyAttachment("ecsLoggingAttachment", {
+const ecsLoggingPolicyAttachment = new aws.iam.RolePolicyAttachment("ecsLoggingAttachment", {
     role: ecsExecutionRole.name,  // Adjust this to the name or reference of your state machine's execution role
     policyArn: sfnLoggingPolicy.arn
 });
@@ -302,7 +302,7 @@ const lambdaInvokePolicyAttachment = new aws.iam.PolicyAttachment("lambdaInvokeP
 });
 
 
-const stateMachineDefinition = pulumi.all([defaultSubnetIds, s3UploadLambda.arn, cluster.arn, taskDefinition.arn, provider.region]).apply(([subnets, lambdaArn, clusterArn, taskArn, region]) => {
+const stateMachineDefinition = pulumi.all([defaultSubnetIds, s3UploadLambda.arn, cluster.arn, taskDefinition.arn, region]).apply(([subnets, lambdaArn, clusterArn, taskArn, region]) => {
     return JSON.stringify({
         StartAt: "S3Upload",
         States: {
@@ -359,7 +359,7 @@ const stateMachineDefinition = pulumi.all([defaultSubnetIds, s3UploadLambda.arn,
     });
 });
 
-export const stateMachine = new aws.sfn.StateMachine("stateMachine", {
+const stateMachine = new aws.sfn.StateMachine("stateMachine", {
     definition: stateMachineDefinition, 
     roleArn: sfnExecutionRole.arn,
     loggingConfiguration: {
@@ -371,7 +371,7 @@ export const stateMachine = new aws.sfn.StateMachine("stateMachine", {
     dependsOn: [sfnLogGroup, s3UploadLambda, euclidBucket]
 });
 
-export const sfnRolePolicy = new aws.iam.RolePolicy("sfn-role-policy", {
+const sfnRolePolicy = new aws.iam.RolePolicy("sfn-role-policy", {
     role: sfnExecutionRole.id,
     policy: {
         Version: "2012-10-17",
@@ -401,35 +401,35 @@ STATE MACHINE CONFIGURATION END
 /*
 APIGATEWAY CONFIG START
 */
-export const restApi = new aws.apigateway.RestApi("my-api", {
+const restApi = new aws.apigateway.RestApi("my-api", {
     description: "My API Gateway that triggers a state machine",
     endpointConfiguration: {
         types: "REGIONAL"
     }
 });
 
-export const resource = new aws.apigateway.Resource("my-resource", {
+const apiResource = new aws.apigateway.Resource("apiResource", {
     restApi: restApi.id,
     parentId: restApi.rootResourceId,
     pathPart: "euclid"
 });
 
 
-export const method = new aws.apigateway.Method("my-method", {
+const method = new aws.apigateway.Method("my-method", {
     restApi: restApi.id,
-    resourceId: resource.id,
+    resourceId: apiResource.id,
     httpMethod: "POST",
     authorization: "NONE"
 });
 
 // PLEASE DEPLOY IN US-EAST-1. 
-export const integration = new aws.apigateway.Integration("my-integration", {
+const integration = new aws.apigateway.Integration("my-integration", {
     restApi: restApi.id,
-    resourceId: resource.id,
+    resourceId: apiResource.id,
     httpMethod: "POST",
     integrationHttpMethod: "POST",
     type: "AWS",
-    uri: pulumi.interpolate`arn:aws:apigateway:us-east-1:states:action/StartExecution`,
+    uri: pulumi.interpolate`arn:aws:apigateway:${region}:states:action/StartExecution`,
     credentials: sfnExecutionRole.arn,
     requestTemplates: {
         "application/json": pulumi.interpolate`{"input": "$util.escapeJavaScript($input.json(\'$\'))", "stateMachineArn": "${stateMachine.arn}"}`
@@ -437,7 +437,7 @@ export const integration = new aws.apigateway.Integration("my-integration", {
 }, { dependsOn: [method] });
 
 
-export const policyDocument = pulumi.all([restApi.executionArn, stateMachine.arn]).apply(([executionArn, stateMachineArn]) => {
+const stateMachinPolicyDocument = pulumi.all([restApi.executionArn, stateMachine.arn]).apply(([executionArn, stateMachineArn]) => {
     return JSON.stringify({
         Version: "2012-10-17",
         Statement: [{
@@ -453,37 +453,33 @@ export const policyDocument = pulumi.all([restApi.executionArn, stateMachine.arn
     });
 });
 
-export const policy = new aws.iam.Policy("api-gateway-sfn-policy", {
-    policy: policyDocument
+const apiGatewaySfnPolicy = new aws.iam.Policy("api-gateway-sfn-policy", {
+    policy: stateMachinPolicyDocument
 });
 
 
-export const deployment = new aws.apigateway.Deployment("my-deployment", {
+const apiStageDeployment = new aws.apigateway.Deployment("api-stage-deployment", {
     restApi: restApi,
     stageName: "prod",
 }, { dependsOn: [integration] });
 
 
-export const apiUrl = deployment.invokeUrl;
-
-
-export const rolePolicyAttachment = new aws.iam.RolePolicyAttachment("attach-policy-to-role", {
+const rolePolicyAttachment = new aws.iam.RolePolicyAttachment("attach-policy-to-role", {
     role: sfnExecutionRole.name,
-    policyArn: policy.arn
+    policyArn: apiGatewaySfnPolicy.arn
 });
 
-export const apiGatewayUrl = restApi.executionArn;
 
 const response200 = new aws.apigateway.MethodResponse("response200", {
     restApi: restApi.id,
-    resourceId: resource.id,
+    resourceId: apiResource.id,
     httpMethod: method.httpMethod,
     statusCode: "200",
 });
 
-export const integrationResponse = new aws.apigateway.IntegrationResponse("my-integration-response", {
+const integrationResponse = new aws.apigateway.IntegrationResponse("integration-response", {
     restApi: restApi,
-    resourceId: resource.id,
+    resourceId: apiResource.id,
     httpMethod: "POST",
     statusCode: response200.statusCode,
     responseTemplates: {
@@ -496,8 +492,6 @@ APIGATEWAY CONFIGURATION END
 */
 
 
-export const outputApiGatewayUrl = apiGatewayUrl;
-export const outputStateMachineArn = stateMachine.arn;
-export const outputApiUrl = apiUrl;
-export const outputBucketArn = euclidBucket.arn;
+export const outputApiUrl = apiStageDeployment.invokeUrl;
 export const outputBucketName = euclidBucket.id;
+export const outputServiceEndpoint = pulumi.interpolate`${outputApiUrl}/euclid"`;
