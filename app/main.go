@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -17,8 +18,16 @@ func main() {
 	region := os.Getenv("REGION")
 	bucket := os.Getenv("BUCKET")
 	key := os.Getenv("KEY")
+
 	num1, err := strconv.Atoi(os.Getenv("NUM1"))
-	num2, _ := strconv.Atoi(os.Getenv("NUM2"))
+	if err != nil {
+		log.Panicf("You provided %v as input for 'a'. Please provide a valid integer", num1)
+	}
+
+	num2, err := strconv.Atoi(os.Getenv("NUM2"))
+	if err != nil {
+		log.Panicf("You provided %v as input for 'b'. Please provide a valid integer", num2)
+	}
 
 	// Create AWS Session
 	sess, err := session.NewSession(&aws.Config{
