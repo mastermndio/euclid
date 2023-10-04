@@ -1,0 +1,43 @@
+swagger: "2.0"
+info:
+  version: "1.0.0"
+  title: "Euclid API"
+  description: "An API for the Euclid service."
+
+paths:
+  /euclid:
+    post:
+      summary: "Euclid endpoint"
+      description: "Accepts two numbers for processing."
+      consumes:
+        - "application/json"
+      produces:
+        - "application/json"
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "Input payload"
+          required: true
+          schema:
+            $ref: "#/definitions/EuclidInput"
+      responses:
+        200:
+          description: "Successful operation"
+        400:
+          description: "Invalid input"
+        500:
+          description: "Internal server error"
+
+definitions:
+  EuclidInput:
+    type: "object"
+    properties:
+      a:
+        type: "number"
+        description: "First number for the operation."
+      b:
+        type: "number"
+        description: "Second number for the operation."
+    required:
+      - "a"
+      - "b"

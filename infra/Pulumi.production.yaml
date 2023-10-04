@@ -1,0 +1,3 @@
+config:
+  infra:imageName: mastermndio/euclid
+  infra:region: us-east-1

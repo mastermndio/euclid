@@ -2,6 +2,9 @@ const AWS = require('aws-sdk');
 const s3 = new AWS.S3();
 
 exports.handler = async (event) => {
+    if (!Number.isInteger(parseInt(event.a)) || !Number.isInteger(parseInt(event.b))) {
+        throw new Error(`You provided ${event.a} and ${event.b} as input. Please provide a valid integer`)
+    }
     let timestamp = new Date().toISOString();
 
     const s3Bucket = process.env.S3_BUCKET;
@@ -10,7 +13,7 @@ exports.handler = async (event) => {
     await s3.putObject({
         Bucket: s3Bucket,
         Key: s3Key,
-        Body: JSON.stringify(event), // or choose what part of the event you want to save
+        Body: JSON.stringify(event), 
         ContentType: "application/json"
     }).promise();
 
